@@ -6,6 +6,7 @@ from torch import nn, optim
 from torch.nn import functional as F
 from itertools import count
 from typing_extensions import Self
+import numpy as np
 
 
 class DQN(nn.Module):
@@ -61,6 +62,8 @@ memory: Memory = None
 
 iteration: int = None
 
+mode : str = None
+
 
 def epsilon(x: int) -> float:
     return EPS_END + (EPS_START - EPS_END) * math.exp(-1 * EPS_DECAY * x)
@@ -98,11 +101,15 @@ def optimize_model():
 
 
 def select_action(state: T.Tensor, iteration: int) -> int:
-    epsilon_threshold: float = epsilon(iteration)
-    if random.random() > epsilon_threshold:
+    if mode == 'train':
+        epsilon_threshold: float = epsilon(iteration)
+        if random.random() > epsilon_threshold:
+            with T.no_grad():
+                return T.argmax(policy_net(state)).item()
+        return env.action_space.sample()
+    elif mode == 'evaluate':
         with T.no_grad():
             return T.argmax(policy_net(state)).item()
-    return env.action_space.sample()
 
 
 def train(epochs: int) -> None:
@@ -139,10 +146,38 @@ def train(epochs: int) -> None:
 
         print(f"Epoch {epoch} - ({t})")
 
+def evaluate():
+    """Evaluate the trained model."""
+    state, info = env.reset()
+    state = T.tensor(state, dtype=T.float32, device=device).unsqueeze(0)  # Convert to Tensor and add the batch dimension.
+    done = False
+    epsilon = 0  # Control the exploration rate of action selection.
+
+    while not done:
+        # Select an action.
+        action = select_action(state, iteration)  # Set epsilon to 0 for pure greedy behavior.
+
+        # Execute the action.
+        next_state, reward, terminated, truncated, _ = env.step(action)
+        done = terminated or truncated
+        next_state = T.tensor(next_state, dtype=T.float32, device=device).unsqueeze(0)
+
+        # Update the state.
+        state = next_state
+
+        # Render the environment (display the car and pole).
+        env.render()
+
+    env.close()  # Close the environment.
 
 def main() -> None:
+    global mode
+    mode = input("Enter 'train' or 'evaluate': ")
+    if mode != 'train' and mode != 'evaluate':
+        print("Invalid mode.")
+        return
     global env, device, policy_net, target_net, optimizer, criterion, memory, iteration
-    env = gym.make("CartPole-v1")
+    env = gym.make("CartPole-v1", render_mode="human") # If you don't want to see the graphical interface, remove render_mode="human".
     device = T.device("cuda" if T.cuda.is_available() else "cpu")
     n_observations: int = env.observation_space.shape[0]
     n_actions: int = env.action_space.n
@@ -154,9 +189,12 @@ def main() -> None:
     memory = Memory(10_000, device=device)
     iteration = 0
 
-    train(400)
-
-    T.save(target_net.state_dict(), "trained.pt")
+    if mode == 'train':
+        train(400)
+        T.save(target_net.state_dict(), "trained.pt")
+    elif mode == 'evaluate':
+        policy_net.load_state_dict(T.load("trained.pt", weights_only=True))
+        evaluate()
 
 
 if __name__ == "__main__":
